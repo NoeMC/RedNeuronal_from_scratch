@@ -1,6 +1,39 @@
 import numpy as np
 import csv
 import click
+import Orange as og
+from sklearn.metrics import confusion_matrix,precision_score
+from sklearn.model_selection import KFold
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning) 
+
+def validacionCruzada(X,Y,k,epocas, learning):
+    x = X.T
+    y = Y.T
+    precision = []
+    kf = KFold(n_splits=k, shuffle=True, random_state=7)
+    i = 1
+    for train_f,test_f in kf.split(x,y):
+        entrenamiento = np.take(x,train_f,axis=0)
+        y_train = np.take(y,train_f)
+        y_train = y_train.tolist()
+        entrenamiento = entrenamiento.T
+        y_train = mapea_clases(y_train[0]).T
+        prueba = np.take(x,test_f,axis=0)
+        prueba = prueba.T
+        y_test = np.take(y,test_f)
+        y_test = y_test.tolist()
+        print("\nfolder " + str(i))
+        i += 1
+        modelo = red_neuronal(entrenamiento,y_train,epocas,learning)
+        AL, caches = L_model_forward(prueba, modelo)
+        Y_pred = np.asarray(np.argmax(AL, axis=0))
+        
+        precision.append(precision_score(y_test[0], Y_pred[0], average='micro',zero_division=1))
+    return np.asarray(precision)
+
+        
+
 
 def leeDatos(nombre):
     X = []
@@ -121,30 +154,6 @@ def compute_cost(AL, Y):
     
     return cost
 
-def backward_propagation(cache, X, Y):
-
-    m = X.shape[1]
-
-    W1 = cache["W1"]
-    W2 = cache["W2"]
-
-    A1 = cache["A1"]
-    A2 = cache["A2"]
-
-    dZ2= A2 - Y
-    dW2 = (1 / m) * np.dot(dZ2, A1.T)
-    db2 = (1 / m) * np.sum(dZ2, axis=1)
-    dZ1 = np.multiply(np.dot(W2.T, dZ2), np.multiply(A1,(1 - A1)))
-    dW1 = (1 / m) * np.dot(dZ1, X.T)
-    db1 = (1 / m) * np.sum(dZ1, axis=1)
-    
-    grads = {"dW1": dW1,
-             "db1": db1,
-             "dW2": dW2,
-             "db2": db2}
-    
-    return grads
-
 def dZN(W, dZPost, A):
     dA = np.dot(W.T, dZPost)
     return np.multiply(dA,sigmoid_deri(A))
@@ -173,7 +182,7 @@ def backpropagation_NL(cache, X, Y):
 
 
 
-def update_parameters(cache, grads, learning_rate=.02):
+def actualiza_parametros(cache, grads, taza_aprendizaje=.02):
     parametros = {}
     L = len(cache.items()) // 4
 
@@ -183,8 +192,8 @@ def update_parameters(cache, grads, learning_rate=.02):
         dWN = grads["dW" + str(l)]
         dbN = grads["db" + str(l)]
 
-        WN = WN - learning_rate * dWN
-        bN = bN - learning_rate * dbN
+        WN = WN - taza_aprendizaje * dWN
+        bN = bN - taza_aprendizaje * dbN
         
         parametros["W" + str(l)] = WN
         parametros["b" + str(l)] = bN
@@ -195,14 +204,58 @@ def progress_bar(costo, epocas):
     print('{0}>> {1}'.format('='*(costo//(epocas//100)),costo),end="\r")
 
 
+def formato_orange(dataset,nombre):
+
+    x, y = leeDatos(dataset)
+    x = x.T
+    y = np.asmatrix(y,dtype=np.int32)
+    y = y.T
+    atr_name =  ["atr"+str(i) for i in range(x.shape[1])]
+    atr_name.append("clase")
+    atr_name = np.asmatrix(atr_name)
+    atr_type =  ["c" for i in range(x.shape[1])]
+    atr_type.append("d")
+    atr_type = np.asmatrix(atr_type)
+    atr_meta =  ["" for i in range(x.shape[1])]
+    atr_meta.append("c")
+    atr_meta = np.asmatrix(atr_meta)
+
+    header = np.concatenate((atr_name,atr_type))
+    header = np.concatenate((header,atr_meta))
+    body = np.concatenate((x,y),axis=1)
+
+    files = np.concatenate((header,body))
+    np.savetxt(nombre,files,delimiter=",",fmt="%s")
+
+def red_neuronal(X,Y,epocas,taza_apre):
+    parametros = inicializa_parametros([X.shape[0],X.shape[0],Y.shape[0]])
+    for i in range(0, epocas +1):
+        AL, caches = L_model_forward(X, parametros)
+        cost = compute_cost(AL, Y)
+        progress_bar(i,epocas)
+        grads = backpropagation_NL(caches, X, Y)
+        parametros = actualiza_parametros(caches, grads,taza_apre)
+    return parametros
+
+
+"""
+Incio del programa principal
+"""
+
 @click.command()
 @click.option('-c','--capas', default='a', type= str, help='Numero de capas ocultas ej. --capas= 245')
 @click.option('-lr','--learning', default=.02, help='Learning rate de la red neuronal')
 @click.option('-ep','--epocas', default=500, help='numero de epocas en la red neuronal')
 @click.option('-dt','--data',required=True, type=str,  help='Nombre del conjunto de entrenamiento')
-@click.option('--prueba', help='Nombre del conjunto de pruebas')
-def main(capas, learning, data, prueba, epocas):
+@click.option('-pb','--prueba',required=True, type=str, help='Nombre del conjunto de pruebas')
+@click.option('-kf','--folds',default=5, help='Numero de folders para la validacion cruzada')
+def main(capas, learning, data, prueba, epocas,folds):
+    
+    """
+    Incio de la red neuronal
+    """
     X, Y = leeDatos(data)
+    Y_tmp = np.asmatrix(Y)
     Y = mapea_clases(Y)
     Y = Y.T
     capa = []
@@ -213,34 +266,57 @@ def main(capas, learning, data, prueba, epocas):
         for i in capas:
             capa.append(int(i))
     capa.append(Y.shape[0])
-    parametros = inicializa_parametros([X.shape[0],X.shape[0],Y.shape[0]])
-    for i in range(0, epocas +1):
-        AL, caches = L_model_forward(X, parametros)
-        cost = compute_cost(AL, Y)
-        progress_bar(i,epocas)
-        grads = backpropagation_NL(caches, X, Y)
-        parametros = update_parameters(caches, grads)
+    print(X.shape,Y.shape)
+    
+    
+    """
+    Entrenamiento de la red neuronal multicapa
+    """
+    modelo = red_neuronal(X,Y,epocas,learning)
     print("\n")
-    X, Y = leeDatos("prueba.csv")
-    AL, caches = L_model_forward(X, parametros )
-    print(np.where(AL == np.amax(AL, axis=0)))
+    
+    """
+    Evaluando modelo resultante conjunto de prueba
+    """
+    XP, YP = leeDatos(prueba)
+    AL, caches = L_model_forward(XP, modelo)
+    Y_pred = np.asarray(np.argmax(AL, axis=0))
+    print("Matriz de confucion de MLP\n")
+    print(confusion_matrix(YP, Y_pred[0]))
+    print("\nPrecision testdata del clasificador MLP")
+    print(precision_score(YP, Y_pred[0], average='micro',zero_division=1))
+    
+    """
+    Entrenando modelo con validacion cruzada
+    """
+    scores = validacionCruzada(X,Y_tmp,folds,epocas,learning)
+    print("\nPrecision validacion cruzada de MLP")
+    print(np.average(scores))
+    
 
+    """
+    Incio de Naive Bayes en Orange3
+    """
+    print("\n########### Naive Bayes #############\n")
+    formato_orange(data,'orange.csv')
+    formato_orange(prueba,'orangePrueba.csv')
+    conjunto_entrena = og.data.Table('orange')
+    test = og.data.Table('orangePrueba')
+    clasificador = og.classification.NaiveBayesLearner()
+    res = og.evaluation.TestOnTestData(conjunto_entrena,test,[clasificador])
+    Y = res.actual
+    Y_pred = res.predicted
+
+    print("\nMatriz de confucion de Naive B\n")
+    print(confusion_matrix(Y, Y_pred[0]))
+    tstini = og.evaluation.scoring.Precision(res, average='micro')
+    print("\nPrecision testdata de Naive Bayes Orange")
+    print(tstini)
+
+    res = og.evaluation.CrossValidation(conjunto_entrena,[clasificador], k = folds)
+    print("\nPrecision validacion cruzada de Naive Bayes Orange")
+    tstini = og.evaluation.scoring.Precision(res, average='micro')
+    print(tstini)
 
 if __name__ == "__main__":
     main()
-    """
-    X, Y = leeDatos("datos.csv")
-    Y = mapea_clases(Y)
-    Y = Y.T
-    parametros = inicializa_parametros([X.shape[0],X.shape[0],Y.shape[0]])
-    for i in range(0, 10000):
-        AL, caches = L_model_forward(X, parametros)
-        cost = compute_cost(AL, Y)
-        print(cost)
-        grads = backpropagation_NL(caches, X, Y)
-        parametros = update_parameters(caches, grads)
-
-    X, Y = leeDatos("prueba.csv")
-    AL, caches = L_model_forward(X, parametros )
-    print(np.where(AL == np.amax(AL, axis=0)))
-    """
